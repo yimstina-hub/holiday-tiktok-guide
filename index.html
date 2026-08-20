@@ -182,6 +182,8 @@ a:hover { text-decoration: underline; }
 
 .upcoming-panel { border-top: 1px dashed var(--border); padding-top: 16px; }
 .upcoming-panel h3 { margin: 0 0 12px; font-size: 15.5px; color: #111827; }
+.upcoming-note { margin: 0 0 14px; font-size: 12px; line-height: 1.6; color: var(--text-dim); background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.upcoming-note b { color: #111827; }
 .upcoming-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px,1fr)); gap: 10px; }
 .upcoming-card {
   display: block; text-decoration: none; color: inherit;
@@ -514,6 +516,7 @@ mark { background: #fde68a; color: #111827; border-radius: 3px; padding: 0 2px; 
 
   <div class="upcoming-panel">
     <h3>🚀 接下来可以借势的节日</h3>
+    <p class="upcoming-note">按你打开页面的<b>当天日期</b>，自动判定每个节日当前所处的 <b>四阶段流量节点</b>（启动期 → 上升期 → 高峰期 → 下滑/清仓期），并给出该节点的运营动作建议。节点配色：🟢启动 · 📈上升 · 🔥高峰 · 🔻清仓 · ⚪筹备 · ⏳即将进入 · ⚫过季。模型来自 TikTok 节日产品运营 playbook（长流量期 3–4 个月：万圣节/圣诞节/返校季/亡灵节/感恩节；其余为短流量期约 1.5–2.5 个月）。</p>
     <div class="upcoming-list" id="upcomingList">
       <div class="upcoming-empty">正在计算…</div>
     </div>
@@ -2174,29 +2177,84 @@ function runSearch() {
 }
 
 // ---- "What to leverage next" panel, computed from the visitor's real local date ----
+// Traffic-stage node model ported from the tiktok-holiday-product-ops playbook
+// (scripts/timeline.py). Four sequential stages; month = 30d, week = 7d approximations.
+//   long-traffic  (3-4 month): Halloween / Christmas / Back-to-School
+//   short-traffic (~1.5-2.5 month): most other holidays
+//   start : long H-120..H-90  | short H-56..H-42
+//   rise  : long H-90 ..H-60  | short H-35..H-21
+//   peak  : long H-49 ..H-14  | short H-21..H-14
+//   decline: long/short H-10..H  (clearance window H-20..H-7)
+function holidayType(h) {
+  const n = (h.name || '') + ' ' + (h.fullTitle || '');
+  if (/万圣节|圣诞节|返校季|亡灵节|感恩节|halloween|christmas|thanksgiving|muertos|back[\s-]?to[\s-]?school/i.test(n)) return 'long';
+  return 'short';
+}
+function classifyNode(h, today) {
+  const MS = 86400000;
+  let H = new Date(today.getFullYear(), h.eventMonth - 1, h.eventDay);
+  if (today > H) H = new Date(today.getFullYear() + 1, h.eventMonth - 1, h.eventDay);
+  const type = holidayType(h);
+  const mk = (d) => new Date(H.getTime() + d * MS);
+  const phases = type === 'long' ? [
+    { name: '启动期',     begin: mk(-120), end: mk(-90), emoji: '🟢', bg: '#dbeafe', fg: '#1d4ed8', action: '测款上架 / 达人冷启动 / 库存前置' },
+    { name: '上升期',     begin: mk(-90),  end: mk(-60), emoji: '📈', bg: '#fef3c7', fg: '#b45309', action: '加大达人铺量 / 仿拍爆款 / 动态涨价' },
+    { name: '高峰期',     begin: mk(-49),  end: mk(-14), emoji: '🔥', bg: '#ffe4e6', fg: '#be123c', action: '全力冲量 / 广告投放 / 维护链接' },
+    { name: '下滑/清仓期',begin: mk(-10),  end: mk(1),   emoji: '🔻', bg: '#f3f4f6', fg: '#4b5563', action: '停止寄样 / 清仓 / 转下一节点' },
+  ] : [
+    { name: '启动期',     begin: mk(-56),  end: mk(-42), emoji: '🟢', bg: '#dbeafe', fg: '#1d4ed8', action: '测款上架 / 达人冷启动 / 库存前置' },
+    { name: '上升期',     begin: mk(-35),  end: mk(-21), emoji: '📈', bg: '#fef3c7', fg: '#b45309', action: '加大达人铺量 / 仿拍爆款 / 动态涨价' },
+    { name: '高峰期',     begin: mk(-21),  end: mk(-14), emoji: '🔥', bg: '#ffe4e6', fg: '#be123c', action: '全力冲量 / 广告投放 / 维护链接' },
+    { name: '下滑/清仓期',begin: mk(-10),  end: mk(1),   emoji: '🔻', bg: '#f3f4f6', fg: '#4b5563', action: '停止寄样 / 清仓 / 转下一节点' },
+  ];
+  if (today < phases[0].begin) {
+    const d = Math.round((phases[0].begin - today) / MS);
+    return { node: { emoji: '⚪', label: '筹备期(未启动)', bg: '#f3f4f6', fg: '#6b7280' },
+             detail: `还有 ${d} 天进入启动期 · 提前选品 / 内容筹备` };
+  }
+  if (today > H) {
+    return { node: { emoji: '⚫', label: '已结束(过季)', bg: '#f3f4f6', fg: '#9ca3af' },
+             detail: '节日已过 · 沉淀内容资产供明年复用' };
+  }
+  for (const p of phases) {
+    if (today >= p.begin && today < p.end) {
+      const dEvent = Math.round((H - today) / MS);
+      return { node: { emoji: p.emoji, label: p.name, bg: p.bg, fg: p.fg },
+               detail: `距 ${h.eventMonth}月${h.eventDay}日 还有 ${dEvent} 天 · ${p.action}` };
+    }
+  }
+  for (const p of phases) {
+    if (today < p.begin) {
+      const d = Math.round((p.begin - today) / MS);
+      return { node: { emoji: '⏳', label: '即将进入' + p.name, bg: '#ede9fe', fg: '#6d28d9' },
+               detail: `还有 ${d} 天进入${p.name} · ${p.action}` };
+    }
+  }
+  return { node: { emoji: '⏳', label: '即将进入节点', bg: '#ede9fe', fg: '#6d28d9' }, detail: '关注流量节点变化' };
+}
 function buildUpcoming() {
   const list = document.getElementById('upcomingList');
   if (!list || !OVERVIEW_DATA.length) return;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const year = today.getFullYear();
   const MS = 86400000;
 
   const items = OVERVIEW_DATA.map(h => {
-    let flowStart = new Date(year, h.flowStartMonth - 1, h.flowStartDay);
-    let event = new Date(year, h.eventMonth - 1, h.eventDay);
-    let flowEnd = new Date(year, h.flowEndMonth - 1, h.flowEndDay);
+    let flowStart = new Date(today.getFullYear(), h.flowStartMonth - 1, h.flowStartDay);
+    let event = new Date(today.getFullYear(), h.eventMonth - 1, h.eventDay);
+    let flowEnd = new Date(today.getFullYear(), h.flowEndMonth - 1, h.flowEndDay);
     let windowEnd = event > flowEnd ? event : flowEnd;
     if (today > windowEnd) {
-      flowStart = new Date(year + 1, h.flowStartMonth - 1, h.flowStartDay);
-      event = new Date(year + 1, h.eventMonth - 1, h.eventDay);
-      flowEnd = new Date(year + 1, h.flowEndMonth - 1, h.flowEndDay);
+      flowStart = new Date(today.getFullYear() + 1, h.flowStartMonth - 1, h.flowStartDay);
+      event = new Date(today.getFullYear() + 1, h.eventMonth - 1, h.eventDay);
+      flowEnd = new Date(today.getFullYear() + 1, h.flowEndMonth - 1, h.flowEndDay);
       windowEnd = event > flowEnd ? event : flowEnd;
     }
     const active = today >= flowStart && today <= windowEnd;
     const daysUntilEvent = Math.round((event - today) / MS);
     const daysUntilStart = Math.round((flowStart - today) / MS);
-    return { h, active, daysUntilEvent, daysUntilStart };
+    const nodeInfo = classifyNode(h, today);
+    return { h, active, daysUntilEvent, daysUntilStart, nodeInfo };
   });
 
   items.sort((a, b) => {
@@ -2205,18 +2263,14 @@ function buildUpcoming() {
     return a.daysUntilStart - b.daysUntilStart;
   });
 
-  const top = items.slice(0, 6);
+  const top = items.slice(0, 8);
   list.innerHTML = top.map(it => {
-    const h = it.h;
-    const statusLabel = it.active ? '🔥 流量期进行中' : '⏳ 即将进入流量期';
-    const detail = it.active
-      ? (it.daysUntilEvent >= 0 ? `距节日当天还有 ${it.daysUntilEvent} 天` : `节日已过，流量期延续中`)
-      : `${it.daysUntilStart} 天后进入流量期`;
+    const h = it.h, ni = it.nodeInfo;
     const href = h.slug ? '#' + h.slug : '#';
     return `<a href="${href}" class="upcoming-card" style="--qcolor:${h.color}">
       <span class="u-name">${h.name}</span>
-      <span class="u-status">${statusLabel}</span>
-      <div class="u-detail">${detail} · ${h.eventMonth}月${h.eventDay}日</div>
+      <span class="u-status" style="background:${ni.node.bg};color:${ni.node.fg}">${ni.node.emoji} ${ni.node.label}</span>
+      <div class="u-detail">${ni.detail}</div>
     </a>`;
   }).join('');
 }
